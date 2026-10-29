@@ -13,7 +13,7 @@ use super::{
 };
 use crate::blocks::Fluid;
 use horizon_core::{
-    geometry::Vec3,
+    geometry::{Aabb, Vec3},
     random::{LegacyRandom, RandomSource},
 };
 
@@ -1827,6 +1827,54 @@ pub fn after_hurt(m: &mut Mob, source: &Damage) {
         _ => {}
     }
 }
+/// The `NeutralMob` classes of 26.3: they stop being angry when the player
+/// they are angry at dies nearby (`forgive_dead_players`).
+pub fn is_neutral(s: Species) -> bool {
+    matches!(
+        s,
+        Species::Bee
+            | Species::Enderman
+            | Species::IronGolem
+            | Species::PolarBear
+            | Species::Wolf
+            | Species::ZombifiedPiglin
+    )
+}
+/// Whether the mob's persistent anger is at the player
+/// (`NeutralMob.getPersistentAngerTarget`), `playerDied`'s gate.
+pub fn angry_at_player(m: &Mob) -> bool {
+    match m.species() {
+        Species::Bee => super::bee::get(m).is_some_and(|b| b.angry_at == Some(Who::Player)),
+        // The polar bear's and enderman's anger is their player target: the
+        // bear marks it with flag2, the enderman holds it while stared at.
+        Species::PolarBear => m.extra.flag2 && m.ai.target == Some(Who::Player),
+        Species::Enderman => m.ai.target == Some(Who::Player),
+        _ => m.extra.anger > 0 && m.ai.target == Some(Who::Player),
+    }
+}
+/// `NeutralMob.stopBeingAngry`, for a mob `angry_at_player` let through: the
+/// last hurt by, the persistent target and the target all go, the end time
+/// is -1. Bees keep their anger in their own state, and the polar bear ends
+/// its own flags with it.
+pub fn stop_being_angry(m: &mut Mob) {
+    match m.species() {
+        Species::Bee => return super::bee::stop_being_angry(m),
+        Species::PolarBear => return super::polar_bear::stop_being_angry(m),
+        _ => {}
+    }
+    m.ai.last_hurt_by = None;
+    m.extra.anger = 0;
+    m.extra.anger_end = -1;
+    m.extra.angry_at = None;
+    m.ai.target = None;
+}
+/// `ServerPlayer.tellNeutralMobsThatIDied`'s area: the dying player's block
+/// cell grown 32 blocks sideways and 10 up and down.
+pub fn forgiveness_area(feet: [f64; 3]) -> Aabb {
+    let (x, y, z) = (feet[0].floor(), feet[1].floor(), feet[2].floor());
+    Aabb::new(Vec3::new(x, y, z), Vec3::new(x + 1.0, y + 1.0, z + 1.0))
+        .inflate(Vec3::new(32.0, 10.0, 32.0))
+}
 /// Mob.doHurtTarget: attack damage (+ species extras) to the target.
 pub fn do_hurt_target(m: &mut Mob, who: Who, cx: &mut Cx) {
     if m.species() == Species::IronGolem {
@@ -2285,5 +2333,115 @@ mod frog_tests {
                 gravity: true,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod forgiveness_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mob(species: Species) -> Mob {
+        let mut t = (*crate::mobs::sensor_scan_tests::kind()).clone();
+        t.species = species;
+        Mob::new(1, Arc::new(t), Vec3::ZERO, 0.0)
+    }
+
+    /// The dying player's forgiveness covers the six `NeutralMob` classes of
+    /// 26.3 and no others: a panda, a spider and a trader llama are not one
+    /// any more, piglins' anger is Brain-based and zombies are always
+    /// hostile.
+    #[test]
+    fn the_neutral_classes_match_vanilla() {
+        for s in [
+            Species::Bee,
+            Species::Enderman,
+            Species::IronGolem,
+            Species::PolarBear,
+            Species::Wolf,
+            Species::ZombifiedPiglin,
+        ] {
+            assert!(is_neutral(s), "{s:?}");
+        }
+        for s in [
+            Species::Panda,
+            Species::Spider,
+            Species::TraderLlama,
+            Species::Piglin,
+            Species::Zombie,
+            Species::Cow,
+        ] {
+            assert!(!is_neutral(s), "{s:?}");
+        }
+    }
+
+    /// `NeutralMob.playerDied` only forgives a mob whose persistent anger is
+    /// at the dying player; `stopBeingAngry` then clears the hurt by, the
+    /// persistent target, the target and the timer fully.
+    #[test]
+    fn only_the_mobs_angry_at_the_player_are_forgiven() {
+        let mut wolf = mob(Species::Wolf);
+        wolf.extra.anger = 500;
+        // A wolf angry at a skeleton keeps its anger.
+        wolf.ai.target = Some(Who::Mob(7));
+        assert!(!angry_at_player(&wolf));
+
+        wolf.ai.target = Some(Who::Player);
+        wolf.ai.last_hurt_by = Some(Who::Player);
+        assert!(angry_at_player(&wolf));
+        stop_being_angry(&mut wolf);
+        assert_eq!(wolf.extra.anger, 0);
+        assert_eq!(wolf.extra.anger_end, -1);
+        assert_eq!(wolf.extra.angry_at, None);
+        assert_eq!(wolf.ai.target, None);
+        assert_eq!(wolf.ai.last_hurt_by, None);
+    }
+
+    /// The polar bear's anger is its player target behind flag2, and its own
+    /// stop ends the flag with the rest.
+    #[test]
+    fn a_polar_bears_flag_ends_with_the_rest() {
+        let mut bear = mob(Species::PolarBear);
+        bear.extra.anger = 500;
+        bear.extra.flag2 = true;
+        bear.ai.target = Some(Who::Player);
+        bear.ai.last_hurt_by = Some(Who::Player);
+        assert!(angry_at_player(&bear));
+        stop_being_angry(&mut bear);
+        assert!(!bear.extra.flag2);
+        assert_eq!(bear.extra.anger, 0);
+        assert_eq!(bear.ai.target, None);
+        assert_eq!(bear.ai.last_hurt_by, None);
+    }
+
+    /// A bee's anger is its own state's target: the same call ends it there.
+    #[test]
+    fn a_bees_anger_ends_with_the_same_call() {
+        let mut bee = mob(Species::Bee);
+        bee.ai.last_hurt_by = Some(Who::Player);
+        bee.ai.target = Some(Who::Player);
+        stop_being_angry(&mut bee);
+        assert_eq!(bee.ai.target, None);
+        assert_eq!(bee.ai.last_hurt_by, None);
+        let b = crate::mobs::bee::get(&bee).unwrap();
+        assert_eq!(b.angry_at, None);
+        assert_eq!(b.anger_end, -1);
+    }
+
+    /// `tellNeutralMobsThatIDied`'s area: the block cell grown 32 sideways
+    /// and 10 up and down, so a wolf 20 blocks out is in it, one 34 out or
+    /// 12 up is not.
+    #[test]
+    fn the_area_reaches_twenty_blocks_out_but_not_twelve_up() {
+        let area = forgiveness_area([0.0, 64.0, 0.0]);
+        let mut wolf = mob(Species::Wolf);
+        wolf.position = Vec3::new(20.0, 64.0, 0.0);
+        assert!(area.intersects(wolf.bounds()));
+        wolf.position = Vec3::new(34.0, 64.0, 0.0);
+        assert!(!area.intersects(wolf.bounds()));
+        wolf.position = Vec3::new(0.0, 76.0, 0.0);
+        assert!(!area.intersects(wolf.bounds()));
+        wolf.position = Vec3::new(0.0, 69.0, 0.0);
+        assert!(area.intersects(wolf.bounds()));
     }
 }
