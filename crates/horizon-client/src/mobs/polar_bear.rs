@@ -183,7 +183,7 @@ pub fn ai_step(m: &mut Mob, w: &MobWorld) {
     }
 }
 /// `NeutralMob.stopBeingAngry`.
-fn stop_being_angry(m: &mut Mob) {
+pub(super) fn stop_being_angry(m: &mut Mob) {
     m.ai.last_hurt_by = None;
     m.ai.target = None;
     m.extra.anger = 0;
