@@ -5499,24 +5499,20 @@ impl Game<'_> {
             // Inventory.dropAll: every stack thrown in a random direction.
             let feet = [player.position.x, player.position.y, player.position.z];
             let at = [feet[0], feet[1] + 1.32, feet[2]];
-            // ServerPlayer.die: the mobs of NeutralMob classes within 10
-            // blocks of the dying player forget it when the gamerule allows.
-            let w = f64::from(player.dimensions.width) / 2.0;
-            let forgiving = self.ui.rules.bool("forgive_dead_players").then(|| {
-                Aabb::new(
-                    Vec3::new(feet[0] - w, feet[1], feet[2] - w),
-                    Vec3::new(
-                        feet[0] + w,
-                        feet[1] + f64::from(player.dimensions.height),
-                        feet[2] + w,
-                    ),
-                )
-                .inflate(Vec3::new(10.0, 10.0, 10.0))
-            });
+            // ServerPlayer.die: tellNeutralMobsThatIDied — every NeutralMob
+            // in the dying player's block cell grown 32 sideways and 10 up
+            // and down stops being angry at the player, when the gamerule
+            // lets it and the mob's anger is at this player.
+            let forgiving = self
+                .ui
+                .rules
+                .bool("forgive_dead_players")
+                .then(|| horizon_client::mobs::ai::forgiveness_area(feet));
             let killer = self.combat_killer_kind();
             if let Some(area) = forgiving {
                 for m in &mut self.mobs {
                     if horizon_client::mobs::ai::is_neutral(m.species())
+                        && horizon_client::mobs::ai::angry_at_player(m)
                         && area.intersects(m.bounds())
                     {
                         horizon_client::mobs::ai::stop_being_angry(m);
