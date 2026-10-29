@@ -865,7 +865,7 @@ fn mob_meta(
             meta.push((19, serializer::BOOLEAN, Value::Bool(true)));
         }
         defaults.push((19, serializer::BOOLEAN, Value::Bool(false)));
-        let tick = horizon_client::mobs::camel::synced_pose_tick(m, game_time);
+        let tick = horizon_client::mobs::camel::synced_pose_tick(m);
         if tick != 0 {
             meta.push((20, serializer::LONG, Value::Long(tick)));
         }

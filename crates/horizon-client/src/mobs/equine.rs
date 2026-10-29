@@ -522,7 +522,7 @@ fn is_wood_sound_type(sounds: &horizon_items::blocks::Sounds) -> bool {
     }
 }
 /// The mount takes its rider's input (`getRiddenInput`, `tickRidden`).
-pub fn ridden_step(m: &mut Mob) {
+pub fn ridden_step(m: &mut Mob, game_time: i64) {
     let Some(r) = m.rider else {
         return;
     };
@@ -569,9 +569,9 @@ pub fn ridden_step(m: &mut Mob) {
         // while sitting; the jump is a dash.
         if r.forward > 0.0 && super::camel::sitting(m) {
             let mut ev = Vec::new();
-            super::camel::stand_up(m, &mut ev);
+            super::camel::stand_up(m, game_time, &mut ev);
         }
-        if super::camel::refuse_to_move(m) {
+        if super::camel::refuse_to_move(m, game_time) {
             m.ai.xxa = 0.0;
             m.ai.zza = 0.0;
             return;
@@ -591,7 +591,7 @@ pub fn ridden_step(m: &mut Mob) {
         m.ai.zza = forward;
         if r.jump > 0.0 {
             let mut ev = Vec::new();
-            super::camel::dash(m, r.jump, &mut ev);
+            super::camel::dash(m, r.jump, game_time, &mut ev);
             if let Some(rider) = m.rider.as_mut() {
                 rider.jump = 0.0;
             }
@@ -645,7 +645,7 @@ pub fn tail_tick(m: &mut Mob) {
 /// eating/standing/mouth animations.
 pub fn ai_step(m: &mut Mob, w: &MobWorld, events: &mut Vec<MobEvent>) {
     if super::camel::is_camel(m.species()) {
-        return super::camel::ai_step(m, events);
+        return super::camel::ai_step(m, w.game_time, events);
     }
     if super::llama::is_llama(m.species()) {
         return super::llama::ai_step(m, w);

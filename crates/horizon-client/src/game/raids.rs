@@ -740,7 +740,7 @@ impl Game<'_> {
             at[2].floor() as i32,
         );
         let difficulty = self.local_difficulty(at);
-        spawning::finalize(&mut mob, &facts, &difficulty);
+        spawning::finalize(&mut mob, &facts, &difficulty, self.world.game_time);
         raider::finalize(&mut mob, reason);
         let id = mob.id;
         self.mobs.push(mob);

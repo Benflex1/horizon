@@ -493,7 +493,12 @@ impl Game<'_> {
             );
             let at = [m.position.x, m.position.y, m.position.z];
             let difficulty = self.local_difficulty(at);
-            horizon_client::mobs::spawning::finalize(&mut m, &facts, &difficulty);
+            horizon_client::mobs::spawning::finalize(
+                &mut m,
+                &facts,
+                &difficulty,
+                self.world.game_time,
+            );
             // Cat.finalizeSpawn: black in #cats_spawn_as_black.
             if m.species() == horizon_client::mobs::Species::Cat {
                 let p = [

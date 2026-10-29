@@ -159,7 +159,7 @@ impl Game<'_> {
             let mut mob = Mob::new(0, kind, at, r.yaw);
             let facts = self.biome_facts(x.floor() as i32, y.floor() as i32, z.floor() as i32);
             let difficulty = self.local_difficulty(r.position);
-            spawning::finalize(&mut mob, &facts, &difficulty);
+            spawning::finalize(&mut mob, &facts, &difficulty, l.w.game_time);
             // TrialSpawner.spawnMob: setPersistenceRequired.
             mob.persistent = r.trial;
             horizon_client::mobs::raider::finalize(

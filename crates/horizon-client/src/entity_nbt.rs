@@ -605,12 +605,7 @@ pub fn mob_to_nbt(m: &Mob, uuid: [i32; 4], raw: Option<&Tag>) -> Tag {
             }
         }
         "minecraft:camel" | "minecraft:camel_husk" => {
-            // LastPoseTick: negative while sitting.
-            let sitting = crate::mobs::camel::sitting(m);
-            map.insert(
-                "LastPoseTick".into(),
-                Tag::Long(if sitting { -1 } else { 0 }),
-            );
+            map.insert("LastPoseTick".into(), Tag::Long(m.extra.pose_change_tick));
             if let Some(saddle) = m.saddle_item() {
                 map.insert(
                     "equipment".into(),
@@ -1266,11 +1261,7 @@ pub fn mob_from_nbt(tag: &Tag, types: &HashMap<String, Arc<MobType>>, id: u32) -
             .and_then(|v| crate::save::uuid_from_tag(Some(v)));
     }
     if crate::mobs::camel::is_camel(m.species()) {
-        let sitting = matches!(tag.get("LastPoseTick"), Some(Tag::Long(v)) if *v < 0);
-        crate::mobs::camel::stand_up_instantly(&mut m);
-        if sitting {
-            m.extra.egg_time = -1 - 400;
-        }
+        m.extra.pose_change_tick = number(tag.get("LastPoseTick")).unwrap_or(0);
         // Camels are always tame (`Camel.register` in Horizon).
         m.extra.tame = true;
     }
@@ -2907,6 +2898,36 @@ mod axolotl_nbt_tests {
         let mm = &restored.extra.animal_brain.as_ref().unwrap().mem;
         assert_eq!(mm.play_dead_ticks.value(), Some(78));
         assert_eq!(mm.temptation_cooldown_ticks.value(), Some(42));
+    }
+}
+
+#[cfg(test)]
+mod camel_nbt_tests {
+    use super::*;
+    use crate::mobs::{Species, sensor_scan_tests};
+
+    #[test]
+    fn last_pose_tick_keeps_the_pose_change_time() {
+        let mut kind = sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:camel".into();
+        k.species = Species::Camel;
+        let types: HashMap<String, Arc<MobType>> = [("minecraft:camel".to_string(), kind.clone())]
+            .into_iter()
+            .collect();
+        let mut m = Mob::new(1, kind, Vec3::ZERO, 0.0);
+        for tick in [-1234, 0, 5678] {
+            m.extra.pose_change_tick = tick;
+            let tag = mob_to_nbt(&m, [1, 2, 3, 4], None);
+            assert_eq!(number(tag.get("LastPoseTick")), Some(tick));
+            let back = mob_from_nbt(&tag, &types, 2).unwrap();
+            assert_eq!(back.extra.pose_change_tick, tick);
+            if tick < 0 {
+                assert!(crate::mobs::camel::sitting(&back));
+            } else {
+                assert!(!crate::mobs::camel::refuse_to_move(&back, 10_000));
+            }
+        }
     }
 }
 

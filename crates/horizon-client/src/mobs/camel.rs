@@ -12,10 +12,10 @@ use horizon_core::geometry::trig::Mth;
 use horizon_core::random::RandomSource;
 use std::collections::HashMap;
 
-// Camel state: `egg_time` the last pose change tick (negative while
-// sitting), `anim_ticks` the dash cooldown, `flag2` dashing, `ints[0]` the
-// idle animation timeout. AnimState states: sit, sit pose, stand up, idle,
-// dash.
+// Camel state: `pose_change_tick` the `LAST_POSE_CHANGE_TICK` in game time
+// (negative while sitting), `anim_ticks` the dash cooldown, `flag2` dashing,
+// `ints[0]` the idle animation timeout. AnimState states: sit, sit pose,
+// stand up, idle, dash.
 const SIT_DOWN: i64 = 40;
 const STAND_UP: i64 = 52;
 pub const DASH_COOLDOWN: i32 = 55;
@@ -34,17 +34,17 @@ pub fn register(m: &mut Mob) {
     g.add(5, RandomSitting);
     g.add(6, LookAtPlayer::new(6.0));
     g.add(7, RandomLookAround::default());
-    // finalizeSpawn: fully standing.
-    m.extra.egg_time = (m.age as i64 - STAND_UP - 1).max(0) as i32;
 }
-fn pose_time(m: &Mob) -> i64 {
-    i64::from(m.age) - i64::from(m.extra.egg_time).abs()
+/// `Camel.getPoseTime`: ticks since the last pose change.
+fn pose_time(m: &Mob, game_time: i64) -> i64 {
+    game_time - m.extra.pose_change_tick.abs()
 }
+/// `Camel.isSitting`: the pose tick is negative while sitting.
 pub fn sitting(m: &Mob) -> bool {
-    m.extra.egg_time < 0
+    m.extra.pose_change_tick < 0
 }
-fn in_transition(m: &Mob) -> bool {
-    pose_time(m) < if sitting(m) { SIT_DOWN } else { STAND_UP }
+fn in_transition(m: &Mob, game_time: i64) -> bool {
+    pose_time(m, game_time) < if sitting(m) { SIT_DOWN } else { STAND_UP }
 }
 /// `Camel.getPoseTime` of a client mob from the `LAST_POSE_CHANGE_TICK` it
 /// was sent and the client's game time, and whether that value says it sits.
@@ -52,38 +52,35 @@ fn client_pose(m: &Mob, game_time: i64) -> (i64, bool) {
     let tick = m.extra.pose_change_tick;
     (game_time - tick.abs(), tick < 0)
 }
-/// The camel's `LAST_POSE_CHANGE_TICK` as the server sends it: in game time
-/// (a mob counts its own age), negative while sitting.
-pub fn synced_pose_tick(m: &Mob, game_time: i64) -> i64 {
-    let tick = (game_time - pose_time(m)).max(0);
-    if sitting(m) { -tick.max(1) } else { tick }
+/// The camel's `LAST_POSE_CHANGE_TICK` as the server sends it: in game time,
+/// negative while sitting.
+pub fn synced_pose_tick(m: &Mob) -> i64 {
+    m.extra.pose_change_tick
 }
 /// `Entity.onSyncedDataUpdated` for the pose tick of a client mob: its sign
-/// is whether it sits. `client_tick` keeps `egg_time` (in the mob's age, for
-/// `sitting` and `refuse_to_move`) with it.
+/// is whether it sits.
 pub fn set_synced_pose_tick(m: &mut Mob, tick: i64) {
     m.extra.pose_change_tick = tick;
-    m.extra.egg_time = if tick < 0 { -1 } else { 0 };
 }
 /// `Camel.refuseToMove`: sitting or getting up or down.
-pub fn refuse_to_move(m: &Mob) -> bool {
-    sitting(m) || in_transition(m)
+pub fn refuse_to_move(m: &Mob, game_time: i64) -> bool {
+    sitting(m) || in_transition(m, game_time)
 }
-fn sit_down(m: &mut Mob, events: &mut Vec<MobEvent>) {
+fn sit_down(m: &mut Mob, game_time: i64, events: &mut Vec<MobEvent>) {
     if !sitting(m) {
         sound(m, voice(m, 0), events);
-        m.extra.egg_time = -(m.age as i32).max(1);
+        m.extra.pose_change_tick = -game_time;
     }
 }
-pub fn stand_up(m: &mut Mob, events: &mut Vec<MobEvent>) {
+pub fn stand_up(m: &mut Mob, game_time: i64, events: &mut Vec<MobEvent>) {
     if sitting(m) {
         sound(m, voice(m, 1), events);
-        m.extra.egg_time = m.age as i32;
+        m.extra.pose_change_tick = game_time;
     }
 }
 /// `standUpInstantly`.
-pub fn stand_up_instantly(m: &mut Mob) {
-    m.extra.egg_time = (i64::from(m.age) - STAND_UP - 1).max(0) as i32;
+pub fn stand_up_instantly(m: &mut Mob, game_time: i64) {
+    m.extra.pose_change_tick = game_time - STAND_UP - 1;
 }
 /// `is_camel`: camels and camel husks (`CamelHusk extends Camel`).
 pub fn is_camel(s: super::Species) -> bool {
@@ -131,7 +128,7 @@ impl Goal for CamelPanic {
         self.0.can_continue(m, cx)
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
-        stand_up_instantly(m);
+        stand_up_instantly(m, cx.w.game_time);
         self.0.start(m, cx);
     }
     fn stop(&mut self, m: &mut Mob, cx: &mut Cx) {
@@ -146,9 +143,9 @@ impl Goal for RandomSitting {
     fn flags(&self) -> u8 {
         MOVE
     }
-    fn can_use(&mut self, m: &mut Mob, _cx: &mut Cx) -> bool {
+    fn can_use(&mut self, m: &mut Mob, cx: &mut Cx) -> bool {
         !m.fluids.in_water
-            && pose_time(m) >= 400
+            && pose_time(m, cx.w.game_time) >= 400
             && m.on_ground
             && m.rider.is_none()
             && m.random.next_int_bound(4).unwrap_or(1) == 0
@@ -157,16 +154,17 @@ impl Goal for RandomSitting {
         false
     }
     fn start(&mut self, m: &mut Mob, cx: &mut Cx) {
+        let game_time = cx.w.game_time;
         if sitting(m) {
-            stand_up(m, cx.events);
+            stand_up(m, game_time, cx.events);
         } else if !super::goals::should_panic(m) {
-            sit_down(m, cx.events);
+            sit_down(m, game_time, cx.events);
             m.ai.nav.stop();
         }
     }
 }
 /// `Camel.tick`: the dash clock, water stands it up; keyframe states.
-pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
+pub fn ai_step(m: &mut Mob, game_time: i64, events: &mut Vec<MobEvent>) {
     if m.extra.flag2 && m.extra.anim_ticks < 50 && (m.on_ground || m.fluids.in_water) {
         m.extra.flag2 = false;
     }
@@ -177,16 +175,16 @@ pub fn ai_step(m: &mut Mob, events: &mut Vec<MobEvent>) {
         }
     }
     if sitting(m) && m.fluids.in_water {
-        stand_up_instantly(m);
+        stand_up_instantly(m, game_time);
     }
-    if refuse_to_move(m) {
+    if refuse_to_move(m, game_time) {
         m.velocity.x = 0.0;
         m.velocity.z = 0.0;
         m.ai.xxa = 0.0;
         m.ai.zza = 0.0;
         m.ai.nav.stop();
     }
-    animation_states(m, pose_time(m), sitting(m));
+    animation_states(m, pose_time(m, game_time), sitting(m));
 }
 /// `Camel.tick` on a client that is not the server: the dash cooldown, which
 /// the dash flag starts, and the keyframe states from the synced pose tick.
@@ -195,8 +193,6 @@ pub fn client_tick(m: &mut Mob, game_time: i64) {
         m.extra.anim_ticks -= 1;
     }
     let (pose_time, sitting) = client_pose(m, game_time);
-    let since = (i64::from(m.age) - pose_time).max(0) as i32;
-    m.extra.egg_time = if sitting { -since.max(1) } else { since };
     animation_states(m, pose_time, sitting);
 }
 /// `Camel.onSyncedDataUpdated(DASH)`: a dash starts the cooldown unless it
@@ -240,8 +236,8 @@ fn animation_states(m: &mut Mob, pose_time: i64, sitting: bool) {
     }
 }
 /// `Camel.executeRidersJump`: the dash along the look, once cooled down.
-pub fn dash(m: &mut Mob, amount: f32, events: &mut Vec<MobEvent>) {
-    if m.extra.anim_ticks > 0 || !m.on_ground || refuse_to_move(m) {
+pub fn dash(m: &mut Mob, amount: f32, game_time: i64, events: &mut Vec<MobEvent>) {
+    if m.extra.anim_ticks > 0 || !m.on_ground || refuse_to_move(m, game_time) {
         return;
     }
     let yaw = m.yaw.to_radians();
@@ -291,5 +287,49 @@ pub fn anim(
         if let (Some(ms), Some(a)) = (state.millis(age), get(name)) {
             a.apply(ms, 1.0, p);
         }
+    }
+}
+
+#[cfg(test)]
+mod camel_pose_tests {
+    use super::*;
+    use crate::mobs::{Species, sensor_scan_tests};
+    use horizon_core::geometry::Vec3;
+    use std::sync::Arc;
+
+    fn camel() -> Mob {
+        let mut kind = sensor_scan_tests::kind();
+        let k = Arc::make_mut(&mut kind);
+        k.id = "minecraft:camel".into();
+        k.species = Species::Camel;
+        Mob::new(1, kind, Vec3::ZERO, 0.0)
+    }
+
+    #[test]
+    fn a_freshly_spawned_camel_can_move() {
+        // Camel.finalizeSpawn -> standUpInstantly: pose time 53, not sitting.
+        let now = 10_000;
+        let mut m = camel();
+        stand_up_instantly(&mut m, now);
+        assert_eq!(m.extra.pose_change_tick, now - STAND_UP - 1);
+        assert!(!sitting(&m));
+        assert_eq!(pose_time(&m, now), STAND_UP + 1);
+        assert!(!refuse_to_move(&m, now));
+    }
+
+    #[test]
+    fn a_sitting_camel_stands_after_52_ticks() {
+        let mut m = camel();
+        let sat = 1_000;
+        sit_down(&mut m, sat, &mut Vec::new());
+        assert!(sitting(&m));
+        assert!(in_transition(&m, sat + SIT_DOWN - 1));
+        assert!(!in_transition(&m, sat + SIT_DOWN));
+
+        let stood = sat + 10;
+        stand_up(&mut m, stood, &mut Vec::new());
+        assert!(!sitting(&m));
+        assert!(refuse_to_move(&m, stood + STAND_UP - 1));
+        assert!(!refuse_to_move(&m, stood + STAND_UP));
     }
 }

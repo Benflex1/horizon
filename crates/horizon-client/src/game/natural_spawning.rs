@@ -393,7 +393,12 @@ impl<'a> Game<'a> {
         let mut mob = Mob::new(0, kind, Vec3::new(x, y, z), r.yaw);
         let facts = self.biome_facts(x.floor() as i32, y.floor() as i32, z.floor() as i32);
         let difficulty = self.local_difficulty(r.position);
-        horizon_client::mobs::spawning::finalize(&mut mob, &facts, &difficulty);
+        horizon_client::mobs::spawning::finalize(
+            &mut mob,
+            &facts,
+            &difficulty,
+            self.world.game_time,
+        );
         horizon_client::mobs::raider::finalize(
             &mut mob,
             horizon_client::mobs::raider::Reason::Natural,
